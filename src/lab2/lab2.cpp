@@ -1,20 +1,11 @@
 /*
- * File: assignment1.cpp
+ * File: lab2.cpp
  *
- * Framework to implement Task 1 of the Advances in Computer Architecture lab
- * session. This uses the framework library to interface with tracefiles which
- * will drive the read/write requests
- *
- * Author(s): Michiel W. van Tol, Mike Lankamp, Jony Zhang,
- *            Konstantinos Bousias
- * Copyright (C) 2005-2017 by Computer Systems Architecture group,
- *                            University of Amsterdam
- *
+ * Author: Theodoros Zois [ UvA: 12491659 - VU: 2652652 ]
  * 
  * Implement a multiprocessor coherent cache system 
  * The code implements a write-through write-allocate cache
  * 
- * Theodoros Zois [ UvA: 12491659 - VU: 2652652 ]
  */
 
 #include <systemc>
