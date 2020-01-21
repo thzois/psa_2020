@@ -681,7 +681,7 @@ int sc_main(int argc, char* argv[])
         init_tracefile(&argc, &argv);
 
         nop_output_enabled = false; // Disabling NOP messagess speeds up testing (stdout is overloaded)
-        show_locks = false;         // lock/unlock messages to stdout
+        show_locks = true;          // lock/unlock messages to stdout
         PENDING_CPUS = num_cpus;
 
         // Initialize statistics counters
@@ -783,8 +783,11 @@ int sc_main(int argc, char* argv[])
         cout << endl << "Total simulation time (sys) " << total_sys_time << endl;
         cout << "Total simulation time (real) " << duration_cast<duration<double>>(end - begin).count() << " sec" << endl;
 
+        if(show_locks)
+            cout << endl << "Lock/Unlock messages are enabled" << endl;
+
         if(!nop_output_enabled)
-            cout << endl << "NOP messages for each CPU are disabled in order to speedup the process of testing! " << endl;
+            cout << endl << "NOP messages for each CPU are disabled in order to speedup the process of testing" << endl;
     }
     catch (exception& e)
     {
