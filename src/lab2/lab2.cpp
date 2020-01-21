@@ -53,7 +53,9 @@ class BUS: public Bus_if, public sc_module
         // Metrics counters
         typedef struct 
         {
-            unsigned int total_waits;
+            unsigned int total_waits_ram;
+            unsigned int total_waits_bus;
+            unsigned int total_waits_rdx;
             unsigned int total_reads;
             unsigned int total_writes;
             unsigned int total_readsX_fetch;
@@ -73,7 +75,9 @@ class BUS: public Bus_if, public sc_module
             caches_metrics = new metrics[PENDING_CPUS];
             for(int i = 0; i < PENDING_CPUS; i++)
             {
-                caches_metrics[i].total_waits = 0;
+                caches_metrics[i].total_waits_ram = 0;
+                caches_metrics[i].total_waits_bus = 0;
+                caches_metrics[i].total_waits_rdx = 0;
                 caches_metrics[i].total_reads = 0;
                 caches_metrics[i].total_writes = 0;
                 caches_metrics[i].total_readsX_fetch = 0;
@@ -99,18 +103,24 @@ class BUS: public Bus_if, public sc_module
         // Track if there are ready RAM responses
         int pending_ram_responses = 0;
 
+        // bool check_conflicting_requests(int address, BusOperation operation)
+        // {
+
+        //     return true;
+        // }
+
         int cache_acquire_lock(int cache_id, const char* cache_name)
         {
             // Give priority to responses from RAM
             while(pending_ram_responses > 0)
             {
-                caches_metrics[cache_id].total_waits++;
+                caches_metrics[cache_id].total_waits_ram++;
                 wait();
             }
 
             while(bus_locked)
             {
-                caches_metrics[cache_id].total_waits++;
+                caches_metrics[cache_id].total_waits_bus++;
                 wait();
             }
 
@@ -826,18 +836,25 @@ int sc_main(int argc, char* argv[])
 
         unsigned int total_cycles = stoul(total_sys_time.to_string().substr(0, total_sys_time.to_string().find(" ")));
         unsigned int total_waits = 0;
+        unsigned int total_waits_bus = 0;
+        unsigned int total_waits_ram = 0;
+        unsigned int total_waits_rdx = 0;
         unsigned int total_reads = 0;
         unsigned int total_writes = 0;
         unsigned int total_readsX_fetch = 0;
         unsigned int total_readsX_write = 0;
         for(int i = 0; i < num_cpus; i++)
         {
-            total_waits += bus.caches_metrics[i].total_waits;
+            total_waits_bus += bus.caches_metrics[i].total_waits_bus;
+            total_waits_ram += bus.caches_metrics[i].total_waits_ram;
+            total_waits_rdx += bus.caches_metrics[i].total_waits_rdx;
             total_reads += bus.caches_metrics[i].total_reads;
             total_writes += bus.caches_metrics[i].total_writes;
             total_readsX_fetch += bus.caches_metrics[i].total_readsX_fetch;
             total_readsX_write += bus.caches_metrics[i].total_readsX_write;
         }
+
+        total_waits = total_waits_bus + total_waits_ram + total_waits_rdx;
         
         cout << "\n** Requests on BUS **" << endl;
         cout << "- Reads: " <<  total_reads << endl;
@@ -849,14 +866,16 @@ int sc_main(int argc, char* argv[])
         cout << "Total (All): " << total_reads + total_readsX_fetch + total_writes + total_readsX_write << endl;
 
         cout << "\n** BUS contention (for caches-only) **" << endl;
-        cout << "- Total waits: " << total_waits << " cycles" << endl;
-        cout << "- Averate time for BUS acquisition: " << double(total_waits) / double(total_writes + total_reads + total_readsX_fetch + total_readsX_write) << " cycles" << endl;
+        cout << "Total waits for RAM responses: " << total_waits_ram << " cycles" << endl;
+        cout << "Total waits for BUS locks: " << total_waits_bus << " cycles" << endl;
+        cout << "Total waits: " << total_waits << " cycles" << endl;
+        cout << "Averate time for BUS acquisition: " << double(total_waits) / double(total_writes + total_reads + total_readsX_fetch + total_readsX_write) << " cycles" << endl;
 
 
         cout << "\n\n** Main memory access rates **" << endl;
         cout << "- Reads: " <<  double(total_reads + total_readsX_fetch) / double(total_cycles) << endl;
         cout << "- Writes: " <<  double(total_writes + total_readsX_write) / double(total_cycles) << endl;
-        cout << "Total: " << double(total_reads + total_readsX_fetch + total_writes + total_readsX_write) / double(total_cycles) << endl;
+        cout << "Total rate: " << double(total_reads + total_readsX_fetch + total_writes + total_readsX_write) / double(total_cycles) << endl;
 
         cout << "\nTotal main memory responses: " << total_reads + total_readsX_fetch << endl;
 
