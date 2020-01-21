@@ -26,9 +26,11 @@
 
 using namespace std;
 using namespace chrono;
-using namespace sc_core; // This pollutes namespace, better: only import what you need.
+using namespace sc_core;
 
-static bool nop_output_enabled = false; // See sc_main for more details
+// See sc_main for more details
+static bool nop_output_enabled; 
+static bool show_locks;         
 static int PENDING_CPUS;
 
 class Bus_if: public virtual sc_interface {
@@ -47,17 +49,14 @@ class BUS: public Bus_if, public sc_module
         {
             PROBE_FUNC_READ,
             PROBE_FUNC_WRITE,
-            PROBE_FUNC_READX,
-            INVALID
+            PROBE_FUNC_READX
         };
 
-        sc_in<bool>                 Port_CLK;
+        sc_in<bool>                                 Port_CLK;
 
-        sc_signal<int>              Signal_BusAddr;
-        sc_signal<int>              Signal_BusCacheID;
-        sc_port<sc_signal_inout_if<BusOperation>> Port_BusOp;
-
-        sc_mutex bus_mutex;
+        sc_port<sc_signal_inout_if<int>>            Port_BusAddr;
+        sc_port<sc_signal_inout_if<int>>            Port_BusCacheID;
+        sc_port<sc_signal_inout_if<BusOperation>>   Port_BusOp;
 
         // Metrics counters
         typedef struct 
@@ -67,12 +66,14 @@ class BUS: public Bus_if, public sc_module
             unsigned int total_writes;
             unsigned int total_readsX;
         } metrics;
-        metrics *caches_metrics;
 
+        metrics *caches_metrics;
 
         SC_CTOR(BUS) 
         { 
             sensitive << Port_CLK.pos();
+
+            bus_locked = false;
 
             req_id = 0;
 
@@ -87,6 +88,11 @@ class BUS: public Bus_if, public sc_module
         }
 
     private:
+        // Used to get exclusivity on the BUS
+        bool bus_locked;
+        sc_mutex bus_mutex;
+
+        // Requests on the BUS are stored into a map
         typedef struct 
         {
             int address;
@@ -95,9 +101,11 @@ class BUS: public Bus_if, public sc_module
 
         unsigned int req_id;
         map<int, bus_request> requests_table;
+
+        // Track if there are ready RAM responses
         int pending_ram_responses = 0;
 
-        int acquire_lock(int cache_id, const char* cache_name)
+        int cache_acquire_lock(int cache_id, const char* cache_name)
         {
             // Give priority to responses from RAM
             while(pending_ram_responses > 0)
@@ -105,39 +113,60 @@ class BUS: public Bus_if, public sc_module
                 caches_metrics[cache_id].total_waits++;
                 wait();
             }
-                       
-            // Acquire lock to the BUS
-            while(bus_mutex.trylock() == -1)
+
+            while(bus_locked)
             {
                 caches_metrics[cache_id].total_waits++;
                 wait();
             }
 
-            cout << sc_time_stamp() << ": " << cache_name << " locked the BUS" << endl;
+            bus_locked = true;
+            bus_mutex.lock();
+
+            if(show_locks)
+                cout << sc_time_stamp() << ": " << cache_name << " locked the BUS" << endl;
+
             return 0;
         }
 
-        int release_lock(const char* cache_name)
+        int ram_acquire_lock()
         {
-            cout << sc_time_stamp() << ": " << cache_name << " unclocked the BUS" << endl;
+            while(bus_locked)
+                wait();
+
+            bus_locked = true;
+            bus_mutex.lock();
+
+            if(show_locks)
+                cout << sc_time_stamp() << ": RAM locked the BUS" << endl;
+
+            return 0;
+        }
+
+        int release_lock(const char* module_name)
+        {
+            if(show_locks)
+                cout << sc_time_stamp() << ": " << module_name << " unclocked the BUS" << endl;
+                            
             bus_mutex.unlock();
+            bus_locked = false;
             return 0;
         }
 
         virtual int read(int cache_id, int address, const char* cache_name) 
         { 
-            acquire_lock(cache_id, cache_name);
+            cache_acquire_lock(cache_id, cache_name);
 
                 // Increase the metric
                 caches_metrics[cache_id].total_reads++;
 
-                // Lock acquired - add entry to the requests_table and get its index    
+                // Lock acquired - add entry to the requests_table and get its id    
                 requests_table.insert(pair<int, bus_request> (req_id, { address, PROBE_FUNC_READ }));
                 int cur_req_id = req_id;
-                req_id++;   // Increase the request_id
+                req_id++;   // Increase the id for the next request
 
-                Signal_BusAddr.write(address);
-                Signal_BusCacheID.write(cache_id);
+                Port_BusAddr->write(address);
+                Port_BusCacheID->write(cache_id);
                 Port_BusOp->write(BUS::PROBE_FUNC_READ);
                 cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_READ to the BUS for address: " << address << endl;
 
@@ -151,24 +180,63 @@ class BUS: public Bus_if, public sc_module
             wait(100);  // RAM latency
             pending_ram_responses++;
 
-            bus_mutex.lock();
-         
-                cout << sc_time_stamp() << ": RAM locked the BUS" << endl;
+            ram_acquire_lock();
+
                 cout << sc_time_stamp() << ": RAM response to " << cache_name << " for address: " << address << " - PROBE_READ" << endl;            
-                cout << sc_time_stamp() << ": RAM unlocked the BUS" << endl;
 
                 // Delete entry from requests table and mark ram response as sent 
                 requests_table.erase(cur_req_id);
                 pending_ram_responses--;
 
-            bus_mutex.unlock();
+            release_lock("RAM");
 
             return 0 ; 
         }
 
-        virtual int write(int cache_id, int address, const char* cache_name)  { return 0; }
+        virtual int write(int cache_id, int address, const char* cache_name)  
+        {
+            cache_acquire_lock(cache_id, cache_name);
 
-        virtual int readX(int cache_id, int address, const char* cache_name) { return 0; }
+                // Increase the metric
+                caches_metrics[cache_id].total_writes++;
+
+                // Lock acquired - add entry to the requests_table and get its index    
+                requests_table.insert(pair<int, bus_request> (req_id, { address, PROBE_FUNC_WRITE }));
+                int cur_req_id = req_id;
+                req_id++;   // Increase the request_id
+
+                Port_BusAddr->write(address);
+                Port_BusCacheID->write(cache_id);
+                Port_BusOp->write(BUS::PROBE_FUNC_WRITE);
+                cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_WRITE to the BUS for address: " << address << endl;
+
+                wait(); // Wait for everyone snoop the bus
+
+            release_lock(cache_name);
+ 
+
+
+            // Fetch response from RAM
+            wait(100);  // RAM latency
+            pending_ram_responses++;
+
+            ram_acquire_lock();
+
+                cout << sc_time_stamp() << ": RAM response to " << cache_name << " for address: " << address << " - PROBE_WRITE" << endl;            
+
+                // Delete entry from requests table and mark ram response as sent 
+                requests_table.erase(cur_req_id);
+                pending_ram_responses--;
+
+            release_lock("RAM");
+
+            return 0; 
+        }
+
+        virtual int readX(int cache_id, int address, const char* cache_name)
+        {
+            return 0;
+        } 
 };
 // ====================== BUS END =====================
 
@@ -196,10 +264,10 @@ SC_MODULE(L1_Cache)
         sc_out<RetCode>             Port_Done;
         sc_inout_rv<32>             Port_Data;
 
-        sc_in<int>                  Port_BusAddr;       // read address from the BUS
-        sc_in<int>                  Port_BusCacheID;                // CACHE_ID that writes to the BUS
-        sc_port<sc_signal_in_if<BUS::BusOperation>> Port_BusOp; // BUS operations (events)
-        sc_port<Bus_if>             Port_Bus;           // connect cache with the BUS
+        sc_port<sc_signal_in_if<int>>               Port_BusAddr;       // read address from the BUS
+        sc_port<sc_signal_in_if<int>>               Port_BusCacheID;    // CACHE_ID that writes to the BUS 
+        sc_port<sc_signal_in_if<BUS::BusOperation>> Port_BusOp;         // BUS operations (events)
+        sc_port<Bus_if>                             Port_Bus;           // connect cache with the BUS
 
         int CACHE_ID;
         bool snooping_enabled; 
@@ -351,7 +419,7 @@ SC_MODULE(L1_Cache)
                         if(cache->sets[set_index].ways[i].tag == tag)
                         {
                             // Cache ReadHit
-                            // cout << sc_time_stamp() << ": " << name() << " HIT (Read) address: " << address << " tag: " << tag << " set: " << set_index << " way: " << i << endl;
+                            cout << sc_time_stamp() << ": " << name() << " HIT (Read) address: " << address << " tag: " << tag << " set: " << set_index << " way: " << i << endl;
                             stats_readhit(CACHE_ID);
                             update_lru(set_index, i);
                             found = true;
@@ -388,7 +456,7 @@ SC_MODULE(L1_Cache)
                     if(cache->sets[set_index].ways[i].tag == tag)
                     {
                         // Cache WriteHit
-                        // cout << sc_time_stamp() << ": " << name() << " HIT (Write) address: " << address << " tag: " << tag << " set: " << set_index << " way: " << i << " - UPDATE RAM" << endl;
+                        cout << sc_time_stamp() << ": " << name() << " HIT (Write) address: " << address << " tag: " << tag << " set: " << set_index << " way: " << i << " - UPDATE RAM" << endl;
                         stats_writehit(CACHE_ID);
 
                         cache->sets[set_index].ways[i].valid = 1;
@@ -405,7 +473,7 @@ SC_MODULE(L1_Cache)
                 if(!found)
                 {
                     // Cache WriteMiss
-                    // cout << sc_time_stamp() << ": " << name() << " MISS (Write) address: " << address << " tag: " << tag << " set: " << set_index << " - FETCH from RAM" << endl;
+                    cout << sc_time_stamp() << ": " << name() << " MISS (Write) address: " << address << " tag: " << tag << " set: " << set_index << " - FETCH from RAM" << endl;
                     stats_writemiss(CACHE_ID);
 
                     // Fetch from RAM
@@ -447,8 +515,8 @@ SC_MODULE(L1_Cache)
             {
                 wait(Port_BusOp->value_changed_event());
                 BUS::BusOperation r = Port_BusOp->read();
-                int cache_id_req = Port_BusCacheID.read();
-                int address = Port_BusAddr.read();
+                int cache_id_req = Port_BusCacheID->read();
+                int address = Port_BusAddr->read();
                 
                 if(r == BUS::PROBE_FUNC_READ)
                 {
@@ -469,7 +537,7 @@ SC_MODULE(L1_Cache)
                 }
                 else
                 {
-                    cout << "ERROR in " << __FUNCTION__ << ": Function does not exist " << name() << " ADDRESS: " << address << " CACHEID: " << cache_id_req << endl;
+                    cout << "ERROR in " << __FUNCTION__ << ": Function does not exist " << endl;
                 }
             }
         }
@@ -563,7 +631,7 @@ SC_MODULE(CPU)
 
                     if (f == L1_Cache::FUNC_WRITE)
                     {
-                        // cout << sc_time_stamp() << ": " << name() << " sends write for address: " << address << endl;
+                        cout << sc_time_stamp() << ": " << name() << " sends write for address: " << address << endl;
 
                         uint32_t data = rand();
                         Port_CacheData.write(data);
@@ -572,14 +640,14 @@ SC_MODULE(CPU)
                     }
                     else
                     {
-                        // cout << sc_time_stamp() << ": " << name() << " sends read for address: " << address << endl;
+                        cout << sc_time_stamp() << ": " << name() << " sends read for address: " << address << endl;
                     }
 
                     wait(Port_CacheDone.value_changed_event());
 
                     if (f == L1_Cache::FUNC_READ)
                     {
-                        // cout << sc_time_stamp() << ": " << name() << " reads: " << Port_CacheData.read() << endl;
+                        cout << sc_time_stamp() << ": " << name() << " reads: " << Port_CacheData.read() << endl;
                     }
                 }
                 else
@@ -594,9 +662,7 @@ SC_MODULE(CPU)
             // If all CPUs have finished, stop the simulation
             PENDING_CPUS--;
             if(PENDING_CPUS == 0)
-            {
                 sc_stop();
-            }
         }
 };
 // ==================== CPU END ===================
@@ -614,6 +680,8 @@ int sc_main(int argc, char* argv[])
         // This function sets tracefile_ptr and num_cpus
         init_tracefile(&argc, &argv);
 
+        nop_output_enabled = false; // Disabling NOP messagess speeds up testing (stdout is overloaded)
+        show_locks = false;         // lock/unlock messages to stdout
         PENDING_CPUS = num_cpus;
 
         // Initialize statistics counters
@@ -622,19 +690,27 @@ int sc_main(int argc, char* argv[])
         // The clock that will drive the CPU, Cache and the BUS
         sc_clock clk;
         
-        // CPU - Cache signals declaration
+        // CPU - Cache signals/buffers declaration
         sc_buffer<L1_Cache::Function>   sigCacheFunc[num_cpus];
         sc_buffer<L1_Cache::RetCode>    sigCacheDone[num_cpus];
         sc_signal<int>                  sigCacheAddr[num_cpus];
         sc_signal_rv<32>                sigCacheData[num_cpus];
 
+        /* CHECK */ // Maybe buffers for the others?
+        // BUS - Cache signals/buffers
+        sc_signal<int>                  sigBusCacheID;
+        sc_signal<int>                  sigBusAddr;
         sc_buffer<BUS::BusOperation>    sigBusOp;
 
         L1_Cache* cache[num_cpus];
+        
         CPU* cpu[num_cpus];
+
         BUS bus("BUS");
         bus.Port_CLK(clk);
         bus.Port_BusOp(sigBusOp);
+        bus.Port_BusAddr(sigBusAddr);
+        bus.Port_BusCacheID(sigBusCacheID);
 
         for(int i = 0; i < num_cpus; i++)
         {
@@ -658,9 +734,9 @@ int sc_main(int argc, char* argv[])
 
             // Connect Cache to BUS signals
             cache[i]->Port_Bus(bus);
-            cache[i]->Port_BusAddr(bus.Signal_BusAddr);
+            cache[i]->Port_BusAddr(sigBusAddr);
             cache[i]->Port_BusOp(sigBusOp);
-            cache[i]->Port_BusCacheID(bus.Signal_BusCacheID);
+            cache[i]->Port_BusCacheID(sigBusCacheID);
 
 
             // Instantiate CPU modules
@@ -707,8 +783,6 @@ int sc_main(int argc, char* argv[])
         cout << endl << "Total simulation time (sys) " << total_sys_time << endl;
         cout << "Total simulation time (real) " << duration_cast<duration<double>>(end - begin).count() << " sec" << endl;
 
-        // NOTE: If this is disabled is in order to speedup the process of testing (too many messages in stdout)
-        // If you want to enable them configure the related variable on top of the file
         if(!nop_output_enabled)
             cout << endl << "NOP messages for each CPU are disabled in order to speedup the process of testing! " << endl;
     }
