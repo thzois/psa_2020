@@ -28,8 +28,8 @@ class Bus_if: public virtual sc_interface {
     public:
         virtual int read(int cache_id, int address, const char* cache_name) = 0;
         virtual int write(int cache_id, int address, const char* cache_name) = 0;
-        virtual int readX_start(int cache_id, int address, const char* cache_name) = 0;
-        virtual int readX_complete(int cache_id, int address, const char* cache_name, int request_id) = 0;
+        virtual int readX_fetch(int cache_id, int address, const char* cache_name) = 0;
+        virtual int readX_write(int cache_id, int address, const char* cache_name, int request_id) = 0;
 };
 
 
@@ -160,7 +160,7 @@ class BUS: public Bus_if, public sc_module
                 Port_BusAddr->write(address);
                 Port_BusCacheID->write(cache_id);
                 Port_BusOp->write(BUS::PROBE_FUNC_READ);
-                cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_READ to the BUS for address: " << address << endl;
+                cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_READ to the BUS for address: " << address << " - REQ: " << cur_req_id << endl;
 
                 wait(); // Wait for everyone snoop the bus
 
@@ -174,7 +174,7 @@ class BUS: public Bus_if, public sc_module
 
             ram_acquire_lock();
 
-                cout << sc_time_stamp() << ": RAM response to " << cache_name << " for address: " << address << " - PROBE_READ" << endl;            
+                cout << sc_time_stamp() << ": RAM response to " << cache_name << " for address: " << address << " - PROBE_READ - RESP: " << cur_req_id << endl;            
 
                 // Delete entry from requests table and mark ram response as sent 
                 requests_table.erase(cur_req_id);
@@ -198,7 +198,7 @@ class BUS: public Bus_if, public sc_module
                 Port_BusAddr->write(address);
                 Port_BusCacheID->write(cache_id);
                 Port_BusOp->write(BUS::PROBE_FUNC_WRITE);
-                cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_WRITE to the BUS for address: " << address << endl;
+                cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_WRITE to the BUS for address: " << address << " - REQ: " << req_id << endl;
 
                 wait(); // Wait for everyone snoop the bus
 
@@ -207,13 +207,15 @@ class BUS: public Bus_if, public sc_module
 
                 // Remove entry from the requests table and increase the request id
                 requests_table.erase(req_id);
+                cout << sc_time_stamp() << ": " << cache_name << " done PROBE_WRITE for address: " << address << " - RESP: " << req_id << endl;
                 req_id++;
+            
             release_lock(cache_name);
 
             return 0; 
         }
 
-        virtual int readX_start(int cache_id, int address, const char* cache_name)
+        virtual int readX_fetch(int cache_id, int address, const char* cache_name)
         {
             cache_acquire_lock(cache_id, cache_name);
 
@@ -228,7 +230,7 @@ class BUS: public Bus_if, public sc_module
                 Port_BusAddr->write(address);
                 Port_BusCacheID->write(cache_id);
                 Port_BusOp->write(BUS::PROBE_FUNC_READX);
-                cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_READX to the BUS for address: " << address << endl;
+                cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_READX to the BUS for address: " << address << " - REQ: " << cur_req_id << endl;
 
                 wait(); // Wait for everyone snoop the bus
 
@@ -242,7 +244,7 @@ class BUS: public Bus_if, public sc_module
 
             ram_acquire_lock();
 
-                cout << sc_time_stamp() << ": RAM response to " << cache_name << " for address: " << address << " - PROBE_READX" << endl;            
+                cout << sc_time_stamp() << ": RAM response to " << cache_name << " for address: " << address << " - PROBE_READX - RESP: " << cur_req_id << endl;            
                 pending_ram_responses--;
 
             release_lock("RAM");
@@ -250,17 +252,18 @@ class BUS: public Bus_if, public sc_module
             return cur_req_id;
         } 
 
-        virtual int readX_complete(int cache_id, int address, const char* cache_name, int request_id)
+        virtual int readX_write(int cache_id, int address, const char* cache_name, int request_id)
         {
             cache_acquire_lock(cache_id, cache_name);
 
-                cout << sc_time_stamp() << ": " << cache_name << " updates address: " << address << " in RAM - PROBE_READX" << endl;
-                
+                cout << sc_time_stamp() << ": " << cache_name << " updates address: " << address << " in RAM - PROBE_READX - REQ: " << request_id << endl;
+
                 // Update RAM
                 wait(100);
 
                 // Remove entry from the requests table and increase the request id
                 requests_table.erase(request_id);
+                cout << sc_time_stamp() << ": " << cache_name << " done PROBE_READX for address: " << address << " - RESP: " << request_id << endl;
 
             release_lock(cache_name);
 
@@ -506,7 +509,7 @@ SC_MODULE(L1_Cache)
                     stats_writemiss(CACHE_ID);
 
                     // Fetch from RAM - PROBE_READX
-                    int request_id = Port_Bus->readX_start(CACHE_ID, address, name());
+                    int request_id = Port_Bus->readX_fetch(CACHE_ID, address, name());
 
                     int way_idx = get_lru(set_index);
                     cache->sets[set_index].ways[way_idx].tag = tag;
@@ -515,7 +518,7 @@ SC_MODULE(L1_Cache)
                     wait(); // Serve CPU
 
                     // Update RAM
-                    Port_Bus->readX_complete(CACHE_ID, address, name(), request_id);
+                    Port_Bus->readX_write(CACHE_ID, address, name(), request_id);
                 }
             }
 
@@ -735,7 +738,6 @@ int sc_main(int argc, char* argv[])
         sc_signal<int>                  sigCacheAddr[num_cpus];
         sc_signal_rv<32>                sigCacheData[num_cpus];
 
-        /* CHECK */ // Maybe buffers for the others?
         // BUS - Cache signals/buffers
         sc_signal<int>                  sigBusCacheID;
         sc_signal<int>                  sigBusAddr;
@@ -807,17 +809,23 @@ int sc_main(int argc, char* argv[])
         stats_print();
         stats_cleanup();
 
+        unsigned int total_waits = 0;
+        unsigned int total_reads = 0;
+        unsigned int total_writes = 0;
+        unsigned int total_readsX = 0;
+        for(int i = 0; i < num_cpus; i++)
+        {
+            total_waits += bus.caches_metrics[i].total_waits;
+            total_reads += bus.caches_metrics[i].total_reads;
+            total_writes += bus.caches_metrics[i].total_writes;
+            total_readsX += bus.caches_metrics[i].total_readsX;
+        }
+
         cout << endl << "Main memory access rates" << endl;
         // cout << "  - Total waits for the BUS: " << total_waits << endl;
         // cout << "  - Average waiting time per access: " << (double)total_waits / double(total_reads + total_writes + total_readsX) << " cycles" << endl;
         
-        unsigned int total_waits = 0;
-        for(int i = 0; i < num_cpus; i++)
-        {
-            total_waits += bus.caches_metrics[i].total_waits;
-        }
-
-        cout << endl << "Average time for BUS acquisition (caches) " << double(total_waits) / double(num_cpus) << " cycles" << endl;
+        cout << endl << "Average time for BUS acquisition (caches) " << double(total_waits) / double(total_writes + total_reads + total_readsX) << " cycles" << endl;
 
         cout << endl << "Total simulation time (sys) " << total_sys_time << endl;
         cout << "Total simulation time (real) " << duration_cast<duration<double>>(end - begin).count() << " sec" << endl;
