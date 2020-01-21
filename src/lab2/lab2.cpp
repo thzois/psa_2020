@@ -56,7 +56,8 @@ class BUS: public Bus_if, public sc_module
             unsigned int total_waits;
             unsigned int total_reads;
             unsigned int total_writes;
-            unsigned int total_readsX;
+            unsigned int total_readsX_fetch;
+            unsigned int total_readsX_write;
         } metrics;
 
         metrics *caches_metrics;
@@ -75,7 +76,8 @@ class BUS: public Bus_if, public sc_module
                 caches_metrics[i].total_waits = 0;
                 caches_metrics[i].total_reads = 0;
                 caches_metrics[i].total_writes = 0;
-                caches_metrics[i].total_readsX = 0;
+                caches_metrics[i].total_readsX_fetch = 0;
+                caches_metrics[i].total_readsX_write = 0;
             }
         }
 
@@ -121,6 +123,7 @@ class BUS: public Bus_if, public sc_module
             return 0;
         }
 
+
         int ram_acquire_lock()
         {
             while(bus_locked)
@@ -135,6 +138,7 @@ class BUS: public Bus_if, public sc_module
             return 0;
         }
 
+
         int release_lock(const char* module_name)
         {
             if(show_locks)
@@ -144,6 +148,7 @@ class BUS: public Bus_if, public sc_module
             bus_locked = false;
             return 0;
         }
+
 
         virtual int read(int cache_id, int address, const char* cache_name) 
         { 
@@ -185,6 +190,7 @@ class BUS: public Bus_if, public sc_module
             return 0 ; 
         }
 
+
         virtual int write(int cache_id, int address, const char* cache_name)  
         {
             cache_acquire_lock(cache_id, cache_name);
@@ -215,12 +221,13 @@ class BUS: public Bus_if, public sc_module
             return 0; 
         }
 
+
         virtual int readX_fetch(int cache_id, int address, const char* cache_name)
         {
             cache_acquire_lock(cache_id, cache_name);
 
                 // Increase the metric
-                caches_metrics[cache_id].total_readsX++;
+                caches_metrics[cache_id].total_readsX_fetch++;
 
                 // Lock acquired - add entry to the requests_table and get its index    
                 requests_table.insert(pair<int, bus_request> (req_id, { address, PROBE_FUNC_READX }));
@@ -252,10 +259,13 @@ class BUS: public Bus_if, public sc_module
             return cur_req_id;
         } 
 
+
         virtual int readX_write(int cache_id, int address, const char* cache_name, int request_id)
         {
             cache_acquire_lock(cache_id, cache_name);
 
+                // Increase the metric
+                caches_metrics[cache_id].total_readsX_write++;
                 cout << sc_time_stamp() << ": " << cache_name << " updates address: " << address << " in RAM - PROBE_READX - REQ: " << request_id << endl;
 
                 // Update RAM
@@ -402,6 +412,7 @@ SC_MODULE(L1_Cache)
             return -1;
         }
 
+
         void update_lru(int set_index, int way_idx)
         {
             // If the MRU is accessed again, we don't have to update anything
@@ -433,6 +444,7 @@ SC_MODULE(L1_Cache)
             // Make the accessed block the MRU
             cache->sets[set_index].ways[way_idx].lru = NUM_OF_WAYS - 1;
         }
+
 
         int search_cache(int address, Function type)
         {
@@ -526,6 +538,7 @@ SC_MODULE(L1_Cache)
             return 0;
         }
 
+
         void invalidate_copy(int address)
         {
             unsigned int tag  = get_tag(address);
@@ -540,6 +553,7 @@ SC_MODULE(L1_Cache)
                 }
             }
         }
+
 
         void bus_handler()
         {
@@ -583,6 +597,7 @@ SC_MODULE(L1_Cache)
                 }
             }
         }
+
 
         void execute() 
         {
@@ -809,32 +824,51 @@ int sc_main(int argc, char* argv[])
         stats_print();
         stats_cleanup();
 
+        unsigned int total_cycles = stoul(total_sys_time.to_string().substr(0, total_sys_time.to_string().find(" ")));
         unsigned int total_waits = 0;
         unsigned int total_reads = 0;
         unsigned int total_writes = 0;
-        unsigned int total_readsX = 0;
+        unsigned int total_readsX_fetch = 0;
+        unsigned int total_readsX_write = 0;
         for(int i = 0; i < num_cpus; i++)
         {
             total_waits += bus.caches_metrics[i].total_waits;
             total_reads += bus.caches_metrics[i].total_reads;
             total_writes += bus.caches_metrics[i].total_writes;
-            total_readsX += bus.caches_metrics[i].total_readsX;
+            total_readsX_fetch += bus.caches_metrics[i].total_readsX_fetch;
+            total_readsX_write += bus.caches_metrics[i].total_readsX_write;
         }
-
-        cout << endl << "Main memory access rates" << endl;
-        // cout << "  - Total waits for the BUS: " << total_waits << endl;
-        // cout << "  - Average waiting time per access: " << (double)total_waits / double(total_reads + total_writes + total_readsX) << " cycles" << endl;
         
-        cout << endl << "Average time for BUS acquisition (caches) " << double(total_waits) / double(total_writes + total_reads + total_readsX) << " cycles" << endl;
+        cout << "\n** Requests on BUS **" << endl;
+        cout << "- Reads: " <<  total_reads << endl;
+        cout << "- ReadsX_Fetch: " <<  total_readsX_fetch << endl;
+        cout << "Total (Reads): " << total_reads + total_readsX_fetch << endl;
+        cout << "- Writes: " <<  total_writes << endl;
+        cout << "- ReadsX_Write: " <<  total_readsX_write << endl;
+        cout << "Total (Writes): " << total_writes + total_readsX_write << endl;
+        cout << "Total (All): " << total_reads + total_readsX_fetch + total_writes + total_readsX_write << endl;
 
-        cout << endl << "Total simulation time (sys) " << total_sys_time << endl;
+        cout << "\n** BUS contention (for caches-only) **" << endl;
+        cout << "- Total waits: " << total_waits << " cycles" << endl;
+        cout << "- Averate time for BUS acquisition: " << double(total_waits) / double(total_writes + total_reads + total_readsX_fetch + total_readsX_write) << " cycles" << endl;
+
+
+        cout << "\n\n** Main memory access rates **" << endl;
+        cout << "- Reads: " <<  double(total_reads + total_readsX_fetch) / double(total_cycles) << endl;
+        cout << "- Writes: " <<  double(total_writes + total_readsX_write) / double(total_cycles) << endl;
+        cout << "Total: " << double(total_reads + total_readsX_fetch + total_writes + total_readsX_write) / double(total_cycles) << endl;
+
+        cout << "\nTotal main memory responses: " << total_reads + total_readsX_fetch << endl;
+
+        cout << "\n\n** Total time **" << endl;
+        cout << "Total simulation time (sys) " << total_sys_time << endl;
         cout << "Total simulation time (real) " << duration_cast<duration<double>>(end - begin).count() << " sec" << endl;
 
         if(show_locks)
-            cout << endl << "Lock/Unlock messages are enabled" << endl;
+            cout << "\n\nLock/Unlock messages are enabled" << endl;
 
         if(!nop_output_enabled)
-            cout << endl << "NOP messages for each CPU are disabled in order to speedup the process of testing" << endl;
+            cout << "\nNOP messages for each CPU are disabled in order to speedup the process of testing" << endl;
     }
     catch (exception& e)
     {
