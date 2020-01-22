@@ -37,20 +37,20 @@ class Bus_if: public virtual sc_interface {
 class BUS: public Bus_if, public sc_module
 {
     public:
-        enum Operation
+        enum Request
         {
             PROBE_READ,
             PROBE_WRITE,
             PROBE_READX,
             PROBE_READX_DONE,
-            OPERATION_NONE 
+            REQUEST_NONE 
         };
 
         sc_in<bool>                                 Port_CLK;
 
         sc_port<sc_signal_inout_if<int>>            Port_BusAddr;
         sc_port<sc_signal_inout_if<int>>            Port_BusCacheID;
-        sc_port<sc_signal_inout_if<Operation>>      Port_BusOp;
+        sc_port<sc_signal_inout_if<Request>>        Port_BusOp;
 
         // Metrics counters
         unsigned int total_waits_ram;
@@ -79,7 +79,7 @@ class BUS: public Bus_if, public sc_module
             for(int i = 0; i < (int) num_cpus; i++)
             {
                 requests_table[i].tag = -1;
-                requests_table[i].operation = OPERATION_NONE;
+                requests_table[i].request = REQUEST_NONE;
             }
         }
 
@@ -88,11 +88,10 @@ class BUS: public Bus_if, public sc_module
         bool bus_locked;
         sc_mutex bus_mutex;
 
-        // Requests on the BUS are stored into a map
         typedef struct 
         {
             unsigned int tag;
-            Operation operation;
+            Request request;
         } bus_request;
 
         bus_request* requests_table;
@@ -100,7 +99,7 @@ class BUS: public Bus_if, public sc_module
         // Track if there are ready MEM responses
         int pending_ram_responses = 0;
 
-        bool check_conflicting_requests(int cache_id, unsigned int tag, Operation operation)
+        bool check_conflicting_requests(int cache_id, unsigned int tag, Request request)
         {
             // It is allowed only to READ if a READ request is already in the requests table
             // All the other requests for the same tag are considered as conflicting
@@ -109,15 +108,15 @@ class BUS: public Bus_if, public sc_module
                 if(requests_table[i].tag == tag)
                 {
                     // Allow only reads for the same tag
-                    if(requests_table[i].operation == PROBE_READ && operation == PROBE_READ)
+                    if(requests_table[i].request == PROBE_READ && request == PROBE_READ)
                         continue;
                     else
                     {
-                        if(requests_table[i].operation == operation)
+                        if(requests_table[i].request == request)
                         {
-                            cout << sc_time_stamp() << ": Operations CONFLICT for tag: " << tag << " CACHE_" << i << " has exclusivity - CACHE_" << cache_id << " is waiting" << endl;
+                            cout << sc_time_stamp() << ": CONFLICTING requests for tag: " << tag << " CACHE_" << i << " has exclusivity - CACHE_" << cache_id << " is waiting" << endl;
 
-                            while(requests_table[i].operation == operation)
+                            while(requests_table[i].request == request)
                             {    
                                 total_waits_conflicts++;
                                 wait();
@@ -133,7 +132,7 @@ class BUS: public Bus_if, public sc_module
         }
 
 
-        int cache_acquire_lock(const char* cache_name, int cache_id, unsigned int tag, Operation operation)
+        int cache_acquire_lock(const char* cache_name, int cache_id, unsigned int tag, Request request)
         {
             // Give priority to responses from MEM
             while(pending_ram_responses > 0)
@@ -143,7 +142,7 @@ class BUS: public Bus_if, public sc_module
             }
 
             // Check conflicting requests
-            while(!check_conflicting_requests(cache_id, tag, operation))
+            while(!check_conflicting_requests(cache_id, tag, request))
                 continue;
                 
             while(bus_locked)
@@ -190,19 +189,19 @@ class BUS: public Bus_if, public sc_module
 
         virtual int read(int cache_id, int address, unsigned int tag, const char* cache_name) 
         { 
-            Operation operation = PROBE_READ;
-            cache_acquire_lock(cache_name, cache_id, tag, operation);
+            Request request = PROBE_READ;
+            cache_acquire_lock(cache_name, cache_id, tag, request);
 
                 // Increase the metric
                 total_reads++;
 
                 // Add entry to the requests_table
                 requests_table[cache_id].tag = tag;
-                requests_table[cache_id].operation = operation;
+                requests_table[cache_id].request = request;
 
                 Port_BusAddr->write(address);
                 Port_BusCacheID->write(cache_id);
-                Port_BusOp->write(operation);
+                Port_BusOp->write(request);
 
                 cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_READ to the BUS for address: " << address << " with tag: " << tag << endl;
 
@@ -220,7 +219,7 @@ class BUS: public Bus_if, public sc_module
 
                 // Clear entry from requests table and mark ram response as sent 
                 requests_table[cache_id].tag = -1;
-                requests_table[cache_id].operation = OPERATION_NONE;
+                requests_table[cache_id].request = REQUEST_NONE;
                 cout << sc_time_stamp() << ": MEM response to " << cache_name << " for address: " << address << " with tag: " << tag << " - PROBE_READ" << endl;            
 
                 pending_ram_responses--;
@@ -233,19 +232,19 @@ class BUS: public Bus_if, public sc_module
 
         virtual int write(int cache_id, int address, unsigned int tag, const char* cache_name)  
         {
-            Operation operation = PROBE_WRITE;
-            cache_acquire_lock(cache_name, cache_id, tag, operation);
+            Request request = PROBE_WRITE;
+            cache_acquire_lock(cache_name, cache_id, tag, request);
 
                 // Increase the metric
                 total_writes++;
 
                 // Add entry to the requests_table
                 requests_table[cache_id].tag = tag;
-                requests_table[cache_id].operation = operation;
+                requests_table[cache_id].request = request;
 
                 Port_BusAddr->write(address);
                 Port_BusCacheID->write(cache_id);
-                Port_BusOp->write(operation);
+                Port_BusOp->write(request);
                 cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_WRITE to the BUS for address: " << address << " with tag: " << tag << endl;
 
                 wait(); // Wait for everyone snoop the bus
@@ -255,7 +254,7 @@ class BUS: public Bus_if, public sc_module
 
                 // Clear entry from the requests table
                 requests_table[cache_id].tag = -1;
-                requests_table[cache_id].operation = OPERATION_NONE;
+                requests_table[cache_id].request = REQUEST_NONE;
                 cout << sc_time_stamp() << ": " << cache_name << " PROBE_WRITE DONE for address: " << address << " with tag: " << tag << endl;
             
             release_lock(cache_name);
@@ -266,19 +265,19 @@ class BUS: public Bus_if, public sc_module
 
         virtual int readX_fetch(int cache_id, int address, unsigned int tag, const char* cache_name)
         {
-            Operation operation = PROBE_READX;
-            cache_acquire_lock(cache_name, cache_id, tag, operation);
+            Request request = PROBE_READX;
+            cache_acquire_lock(cache_name, cache_id, tag, request);
 
                 // Increase the metric
                 total_readsX_fetch++;
 
                 // Add entry to the requests_table
                 requests_table[cache_id].tag = tag;
-                requests_table[cache_id].operation = operation;
+                requests_table[cache_id].request = request;
 
                 Port_BusAddr->write(address);
                 Port_BusCacheID->write(cache_id);
-                Port_BusOp->write(operation);
+                Port_BusOp->write(request);
 
                 cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_READX to the BUS for address: " << address << " with tag: " << tag << endl;
 
@@ -316,7 +315,7 @@ class BUS: public Bus_if, public sc_module
 
                 // Clear entry from the requests table
                 requests_table[cache_id].tag = -1;
-                requests_table[cache_id].operation = OPERATION_NONE;
+                requests_table[cache_id].request = REQUEST_NONE;
                 cout << sc_time_stamp() << ": " << cache_name << " PROBE_READX DONE for address: " << address << " with tag: " << tag << endl;
 
             release_lock(cache_name);
@@ -352,7 +351,7 @@ SC_MODULE(L1_Cache)
 
         sc_port<sc_signal_in_if<int>>               Port_BusAddr;       // read address from the BUS
         sc_port<sc_signal_in_if<int>>               Port_BusCacheID;    // CACHE_ID that writes to the BUS 
-        sc_port<sc_signal_in_if<BUS::Operation>>    Port_BusOp;         // BUS operations (events)
+        sc_port<sc_signal_in_if<BUS::Request>>      Port_BusOp;         // BUS requests (events)
         sc_port<Bus_if>                             Port_Bus;           // connect cache with the BUS
 
         int CACHE_ID;
@@ -603,7 +602,7 @@ SC_MODULE(L1_Cache)
             while(snooping_enabled)
             {
                 wait(Port_BusOp->value_changed_event());
-                BUS::Operation r = Port_BusOp->read();
+                BUS::Request r = Port_BusOp->read();
                 int cache_id_req = Port_BusCacheID->read();
                 int address = Port_BusAddr->read();
                 
@@ -799,7 +798,7 @@ int sc_main(int argc, char* argv[])
         // BUS - Cache signals/buffers
         sc_buffer<int>                  sigBusCacheID;
         sc_buffer<int>                  sigBusAddr;
-        sc_buffer<BUS::Operation>       sigBusOp;
+        sc_buffer<BUS::Request>         sigBusOp;
 
         L1_Cache* cache[num_cpus];
         
