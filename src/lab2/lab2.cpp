@@ -324,7 +324,7 @@ class BUS: public Bus_if, public sc_module
                 requests_table[cache_id].address = -1;
                 requests_table[cache_id].cache_id = -1;
                 requests_table[cache_id].operation = OPERATION_NONE;
-                cout << sc_time_stamp() << ": " << cache_name << " done PROBE_READX for address: " << address << endl;
+                cout << sc_time_stamp() << ": " << cache_name << " PROBE_READX_DONE for address: " << address << endl;
 
             release_lock(cache_name);
 
