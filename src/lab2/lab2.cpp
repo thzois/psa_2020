@@ -76,7 +76,7 @@ class BUS: public Bus_if, public sc_module
             total_readsX_write = 0;
 
             requests_table = new bus_request[num_cpus];
-            for(int i = 0; i < num_cpus; i++)
+            for(int i = 0; i < (int) num_cpus; i++)
             {
                 requests_table[i].tag = -1;
                 requests_table[i].operation = OPERATION_NONE;
@@ -104,7 +104,7 @@ class BUS: public Bus_if, public sc_module
         {
             // It is allowed only to READ if a READ request is already in the requests table
             // All the other requests for the same tag are considered as conflicting
-            for(int i = 0; i < num_cpus; i++)
+            for(int i = 0; i < (int) num_cpus; i++)
             {
                 if(requests_table[i].tag == tag)
                 {
@@ -782,7 +782,7 @@ int sc_main(int argc, char* argv[])
 
         nop_output_enabled = false; // Disabling NOP messagess speeds up testing (stdout is overloaded)
         show_locks = true;          // lock/unlock messages to stdout
-        PENDING_CPUS = num_cpus;
+        PENDING_CPUS = (int) num_cpus;
 
         // Initialize statistics counters
         stats_init();
@@ -811,7 +811,7 @@ int sc_main(int argc, char* argv[])
         bus.Port_BusAddr(sigBusAddr);
         bus.Port_BusCacheID(sigBusCacheID);
 
-        for(int i = 0; i < num_cpus; i++)
+        for(int i = 0; i < (int) num_cpus; i++)
         {
             // Instantiate L1_Cache modules
             // Set a unique name (cache_ID)
@@ -858,9 +858,9 @@ int sc_main(int argc, char* argv[])
 
 
         // Start Simulation - Measure execution time
-        steady_clock::time_point begin = high_resolution_clock::now();
+        high_resolution_clock::time_point begin = high_resolution_clock::now();
         sc_start();
-        steady_clock::time_point end = high_resolution_clock::now();
+        high_resolution_clock::time_point end = high_resolution_clock::now();
         sc_time total_sys_time = sc_time_stamp();
 
         // Print statistics after simulation finished
