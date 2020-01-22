@@ -26,10 +26,10 @@ static int PENDING_CPUS;
 
 class Bus_if: public virtual sc_interface {
     public:
-        virtual int read(int cache_id, int address, const char* cache_name) = 0;
-        virtual int write(int cache_id, int address, const char* cache_name) = 0;
-        virtual int readX_fetch(int cache_id, int address, const char* cache_name) = 0;
-        virtual int readX_write(int cache_id, int address, const char* cache_name, int request_id) = 0;
+        virtual int read(int cache_id, int address, unsigned int tag, const char* cache_name) = 0;
+        virtual int write(int cache_id, int address, unsigned int tag, const char* cache_name) = 0;
+        virtual int readX_fetch(int cache_id, int address, unsigned int tag, const char* cache_name) = 0;
+        virtual int readX_write(int cache_id, int address, unsigned int tag, const char* cache_name) = 0;
 };
 
 
@@ -53,18 +53,13 @@ class BUS: public Bus_if, public sc_module
         sc_port<sc_signal_inout_if<Operation>>      Port_BusOp;
 
         // Metrics counters
-        typedef struct 
-        {
-            unsigned int total_waits_ram;
-            unsigned int total_waits_bus;
-            unsigned int total_waits_conflicts;
-            unsigned int total_reads;
-            unsigned int total_writes;
-            unsigned int total_readsX_fetch;
-            unsigned int total_readsX_write;
-        } metrics;
-
-        metrics *caches_metrics;
+        unsigned int total_waits_ram;
+        unsigned int total_waits_bus;
+        unsigned int total_waits_conflicts;
+        unsigned int total_reads;
+        unsigned int total_writes;
+        unsigned int total_readsX_fetch;
+        unsigned int total_readsX_write;
 
         SC_CTOR(BUS) 
         { 
@@ -72,24 +67,19 @@ class BUS: public Bus_if, public sc_module
 
             bus_locked = false;
 
+            total_waits_ram = 0;
+            total_waits_bus = 0;
+            total_waits_conflicts = 0;
+            total_reads = 0;
+            total_writes = 0;
+            total_readsX_fetch = 0;
+            total_readsX_write = 0;
+
             requests_table = new bus_request[num_cpus];
             for(int i = 0; i < num_cpus; i++)
             {
-                requests_table[i].address = -1;
-                requests_table[i].cache_id = -1;
+                requests_table[i].tag = -1;
                 requests_table[i].operation = OPERATION_NONE;
-            }
-
-            caches_metrics = new metrics[num_cpus];
-            for(int i = 0; i < num_cpus; i++)
-            {
-                caches_metrics[i].total_waits_ram = 0;
-                caches_metrics[i].total_waits_bus = 0;
-                caches_metrics[i].total_waits_conflicts = 0;
-                caches_metrics[i].total_reads = 0;
-                caches_metrics[i].total_writes = 0;
-                caches_metrics[i].total_readsX_fetch = 0;
-                caches_metrics[i].total_readsX_write = 0;
             }
         }
 
@@ -101,8 +91,7 @@ class BUS: public Bus_if, public sc_module
         // Requests on the BUS are stored into a map
         typedef struct 
         {
-            int address;
-            int cache_id;
+            unsigned int tag;
             Operation operation;
         } bus_request;
 
@@ -111,45 +100,55 @@ class BUS: public Bus_if, public sc_module
         // Track if there are ready MEM responses
         int pending_ram_responses = 0;
 
-        bool check_conflicting_requests(int cache_id, int address, Operation operation)
+        bool check_conflicting_requests(int cache_id, unsigned int tag, Operation operation)
         {
             // It is allowed only to READ if a READ request is already in the requests table
-            // All the other requests for the same address are considered as conflicting
+            // All the other requests for the same tag are considered as conflicting
             for(int i = 0; i < num_cpus; i++)
             {
-                if(requests_table[i].address == address)
+                if(requests_table[i].tag == tag)
                 {
-                    // Allow only reads for the same address
+                    // Allow only reads for the same tag
                     if(requests_table[i].operation == PROBE_READ && operation == PROBE_READ)
                         continue;
                     else
-                        while(requests_table[i].operation == operation)
-                            continue;
+                    {
+                        if(requests_table[i].operation == operation)
+                        {
+                            cout << sc_time_stamp() << ": Operations CONFLICT for tag: " << tag << " CACHE_" << i << " has exclusivity - CACHE_" << cache_id << " is waiting" << endl;
+
+                            while(requests_table[i].operation == operation)
+                            {    
+                                total_waits_conflicts++;
+                                wait();
+                            }   
+
+                            break;
+                        }
+                    }
                 }
             }
 
             return true;
         }
 
-        int cache_acquire_lock(int cache_id, const char* cache_name, int address, Operation operation)
+
+        int cache_acquire_lock(const char* cache_name, int cache_id, unsigned int tag, Operation operation)
         {
             // Give priority to responses from MEM
             while(pending_ram_responses > 0)
             {
-                caches_metrics[cache_id].total_waits_ram++;
+                total_waits_ram++;
                 wait();
             }
 
-            // Check if there is a ReadX issues for that certain address
-            while(!check_conflicting_requests(cache_id, address, operation))
-            {
-                caches_metrics[cache_id].total_waits_conflicts++;
-                wait();
-            }
+            // Check conflicting requests
+            while(!check_conflicting_requests(cache_id, tag, operation))
+                continue;
                 
             while(bus_locked)
             {
-                caches_metrics[cache_id].total_waits_bus++;
+                total_waits_bus++;
                 wait();
             }
 
@@ -189,24 +188,23 @@ class BUS: public Bus_if, public sc_module
         }
 
 
-        virtual int read(int cache_id, int address, const char* cache_name) 
+        virtual int read(int cache_id, int address, unsigned int tag, const char* cache_name) 
         { 
             Operation operation = PROBE_READ;
-            cache_acquire_lock(cache_id, cache_name, address, operation);
+            cache_acquire_lock(cache_name, cache_id, tag, operation);
 
                 // Increase the metric
-                caches_metrics[cache_id].total_reads++;
+                total_reads++;
 
                 // Add entry to the requests_table
-                requests_table[cache_id].address = address;
-                requests_table[cache_id].cache_id = cache_id;
+                requests_table[cache_id].tag = tag;
                 requests_table[cache_id].operation = operation;
 
                 Port_BusAddr->write(address);
                 Port_BusCacheID->write(cache_id);
                 Port_BusOp->write(operation);
 
-                cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_READ to the BUS for address: " << address << endl;
+                cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_READ to the BUS for address: " << address << " with tag: " << tag << endl;
 
                 wait(); // Wait for everyone snoop the bus
 
@@ -221,10 +219,9 @@ class BUS: public Bus_if, public sc_module
             ram_acquire_lock();
 
                 // Clear entry from requests table and mark ram response as sent 
-                requests_table[cache_id].address = -1;
-                requests_table[cache_id].cache_id = -1;
+                requests_table[cache_id].tag = -1;
                 requests_table[cache_id].operation = OPERATION_NONE;
-                cout << sc_time_stamp() << ": MEM response to " << cache_name << " for address: " << address << " - PROBE_READ" << endl;            
+                cout << sc_time_stamp() << ": MEM response to " << cache_name << " for address: " << address << " with tag: " << tag << " - PROBE_READ" << endl;            
 
                 pending_ram_responses--;
 
@@ -234,23 +231,22 @@ class BUS: public Bus_if, public sc_module
         }
 
 
-        virtual int write(int cache_id, int address, const char* cache_name)  
+        virtual int write(int cache_id, int address, unsigned int tag, const char* cache_name)  
         {
             Operation operation = PROBE_WRITE;
-            cache_acquire_lock(cache_id, cache_name, address, operation);
+            cache_acquire_lock(cache_name, cache_id, tag, operation);
 
                 // Increase the metric
-                caches_metrics[cache_id].total_writes++;
+                total_writes++;
 
                 // Add entry to the requests_table
-                requests_table[cache_id].address = address;
-                requests_table[cache_id].cache_id = cache_id;
+                requests_table[cache_id].tag = tag;
                 requests_table[cache_id].operation = operation;
 
                 Port_BusAddr->write(address);
                 Port_BusCacheID->write(cache_id);
                 Port_BusOp->write(operation);
-                cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_WRITE to the BUS for address: " << address << endl;
+                cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_WRITE to the BUS for address: " << address << " with tag: " << tag << endl;
 
                 wait(); // Wait for everyone snoop the bus
 
@@ -258,10 +254,9 @@ class BUS: public Bus_if, public sc_module
                 wait(100);
 
                 // Clear entry from the requests table
-                requests_table[cache_id].address = -1;
-                requests_table[cache_id].cache_id = -1;
+                requests_table[cache_id].tag = -1;
                 requests_table[cache_id].operation = OPERATION_NONE;
-                cout << sc_time_stamp() << ": " << cache_name << " done PROBE_WRITE for address: " << address << endl;
+                cout << sc_time_stamp() << ": " << cache_name << " PROBE_WRITE DONE for address: " << address << " with tag: " << tag << endl;
             
             release_lock(cache_name);
 
@@ -269,24 +264,23 @@ class BUS: public Bus_if, public sc_module
         }
 
 
-        virtual int readX_fetch(int cache_id, int address, const char* cache_name)
+        virtual int readX_fetch(int cache_id, int address, unsigned int tag, const char* cache_name)
         {
             Operation operation = PROBE_READX;
-            cache_acquire_lock(cache_id, cache_name, address, operation);
+            cache_acquire_lock(cache_name, cache_id, tag, operation);
 
                 // Increase the metric
-                caches_metrics[cache_id].total_readsX_fetch++;
+                total_readsX_fetch++;
 
                 // Add entry to the requests_table
-                requests_table[cache_id].address = address;
-                requests_table[cache_id].cache_id = cache_id;
+                requests_table[cache_id].tag = tag;
                 requests_table[cache_id].operation = operation;
 
                 Port_BusAddr->write(address);
                 Port_BusCacheID->write(cache_id);
                 Port_BusOp->write(operation);
 
-                cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_READX to the BUS for address: " << address << endl;
+                cout << sc_time_stamp() << ": " << cache_name << " sends a PROBE_READX to the BUS for address: " << address << " with tag: " << tag << endl;
 
                 wait(); // Wait for everyone snoop the bus
 
@@ -300,7 +294,7 @@ class BUS: public Bus_if, public sc_module
 
             ram_acquire_lock();
 
-                cout << sc_time_stamp() << ": MEM response to " << cache_name << " for address: " << address << " - PROBE_READX" << endl;            
+                cout << sc_time_stamp() << ": MEM response to " << cache_name << " for address: " << address << " with tag: " << tag << " - PROBE_READX" << endl;            
                 pending_ram_responses--;
 
             release_lock("MEM");
@@ -309,22 +303,21 @@ class BUS: public Bus_if, public sc_module
         } 
 
 
-        virtual int readX_write(int cache_id, int address, const char* cache_name, int request_id)
+        virtual int readX_write(int cache_id, int address, unsigned int tag, const char* cache_name)
         {
-            cache_acquire_lock(cache_id, cache_name, address, PROBE_READX_DONE);
+            cache_acquire_lock(cache_name, cache_id, tag, PROBE_READX_DONE);
 
                 // Increase the metric
-                caches_metrics[cache_id].total_readsX_write++;
-                cout << sc_time_stamp() << ": " << cache_name << " updates address: " << address << " in MEM - PROBE_READX" << endl;
+                total_readsX_write++;
+                cout << sc_time_stamp() << ": " << cache_name << " updates address: " << address << " with tag: " << tag << " in MEM - PROBE_READX" << endl;
 
                 // Update MEM
                 wait(100);
 
                 // Clear entry from the requests table
-                requests_table[cache_id].address = -1;
-                requests_table[cache_id].cache_id = -1;
+                requests_table[cache_id].tag = -1;
                 requests_table[cache_id].operation = OPERATION_NONE;
-                cout << sc_time_stamp() << ": " << cache_name << " PROBE_READX_DONE for address: " << address << endl;
+                cout << sc_time_stamp() << ": " << cache_name << " PROBE_READX DONE for address: " << address << " with tag: " << tag << endl;
 
             release_lock(cache_name);
 
@@ -533,7 +526,7 @@ SC_MODULE(L1_Cache)
                     stats_readmiss(CACHE_ID);
 
                     // Fetch from MEM - PROBE_READ
-                    Port_Bus->read(CACHE_ID, address, name());
+                    Port_Bus->read(CACHE_ID, address, tag, name());
 
                     // Insert into cache
                     cache->sets[set_index].ways[way_idx].tag = tag;
@@ -559,7 +552,7 @@ SC_MODULE(L1_Cache)
                         wait(); // Serve CPU
 
                         // Update MEM - PROBE_WRITE
-                        Port_Bus->write(CACHE_ID, address, name());
+                        Port_Bus->write(CACHE_ID, address, tag, name());
                         break;
                     }
                 }
@@ -567,11 +560,11 @@ SC_MODULE(L1_Cache)
                 if(!found)
                 {
                     // Cache WriteMiss
-                    cout << sc_time_stamp() << ": " << name() << " MISS (Write) address: " << address << " tag: " << tag << " set: " << set_index << " - FETCH from MEM" << endl;
+                    cout << sc_time_stamp() << ": " << name() << " MISS (Write) address: " << address << " tag: " << tag << " set: " << set_index << " - FETCH & UPDATE MEM" << endl;
                     stats_writemiss(CACHE_ID);
 
                     // Fetch from MEM - PROBE_READX
-                    int request_id = Port_Bus->readX_fetch(CACHE_ID, address, name());
+                    Port_Bus->readX_fetch(CACHE_ID, address, tag, name());
 
                     int way_idx = get_lru(set_index);
                     cache->sets[set_index].ways[way_idx].tag = tag;
@@ -580,7 +573,7 @@ SC_MODULE(L1_Cache)
                     wait(); // Serve CPU
 
                     // Update MEM
-                    Port_Bus->readX_write(CACHE_ID, address, name(), request_id);
+                    Port_Bus->readX_write(CACHE_ID, address, tag, name());
                 }
             }
 
@@ -875,50 +868,31 @@ int sc_main(int argc, char* argv[])
         stats_cleanup();
 
         unsigned int total_cycles = stoul(total_sys_time.to_string().substr(0, total_sys_time.to_string().find(" ")));
-        unsigned int total_waits = 0;
-        unsigned int total_waits_bus = 0;
-        unsigned int total_waits_ram = 0;
-        unsigned int total_waits_conflicts = 0;
-        unsigned int total_reads = 0;
-        unsigned int total_writes = 0;
-        unsigned int total_readsX_fetch = 0;
-        unsigned int total_readsX_write = 0;
-        for(int i = 0; i < num_cpus; i++)
-        {
-            total_waits_bus += bus.caches_metrics[i].total_waits_bus;
-            total_waits_ram += bus.caches_metrics[i].total_waits_ram;
-            total_waits_conflicts += bus.caches_metrics[i].total_waits_conflicts;
-            total_reads += bus.caches_metrics[i].total_reads;
-            total_writes += bus.caches_metrics[i].total_writes;
-            total_readsX_fetch += bus.caches_metrics[i].total_readsX_fetch;
-            total_readsX_write += bus.caches_metrics[i].total_readsX_write;
-        }
-
-        total_waits = total_waits_bus + total_waits_ram + total_waits_conflicts;
+        unsigned int total_waits = bus.total_waits_bus + bus.total_waits_ram + bus.total_waits_conflicts;
         
         cout << "\n** Requests on BUS **" << endl;
-        cout << "- Reads: " <<  total_reads << endl;
-        cout << "- ReadsX_Fetch: " <<  total_readsX_fetch << endl;
-        cout << "Total (Reads): " << total_reads + total_readsX_fetch << endl;
-        cout << "- Writes: " <<  total_writes << endl;
-        cout << "- ReadsX_Write: " <<  total_readsX_write << endl;
-        cout << "Total (Writes): " << total_writes + total_readsX_write << endl;
-        cout << "Total (All): " << total_reads + total_readsX_fetch + total_writes + total_readsX_write << endl;
+        cout << "- Reads: " << bus.total_reads << endl;
+        cout << "- ReadsX_Fetch: " << bus.total_readsX_fetch << endl;
+        cout << "Total (Reads): " << bus.total_reads + bus.total_readsX_fetch << endl;
+        cout << "- Writes: " << bus.total_writes << endl;
+        cout << "- ReadsX_Write: " << bus.total_readsX_write << endl;
+        cout << "Total (Writes): " << bus.total_writes + bus.total_readsX_write << endl;
+        cout << "Total (All): " << bus.total_reads + bus.total_readsX_fetch + bus.total_writes + bus.total_readsX_write << endl;
 
         cout << "\n** BUS contention (for caches-only) **" << endl;
-        cout << "Total waits for MEM responses: " << total_waits_ram << " cycles" << endl;
-        cout << "Total waits for BUS locks: " << total_waits_bus << " cycles" << endl;
-        cout << "Total waits for CONFLICTING requests (same address): " << total_waits_conflicts << " cycles" << endl;
+        cout << "Total waits for MEM responses: " << bus.total_waits_ram << " cycles" << endl;
+        cout << "Total waits for BUS locks: " << bus.total_waits_bus << " cycles" << endl;
+        cout << "Total waits for CONFLICTING requests (same tag): " << bus.total_waits_conflicts << " cycles" << endl;
         cout << "Total waits: " << total_waits << " cycles" << endl;
-        cout << "Average time for BUS acquisition: " << double(total_waits) / double(total_writes + total_reads + total_readsX_fetch + total_readsX_write) << " cycles" << endl;
+        cout << "Average time for BUS acquisition: " << double(total_waits) / double(bus.total_writes + bus.total_reads + bus.total_readsX_fetch + bus.total_readsX_write) << " cycles" << endl;
 
 
         cout << "\n\n** Main memory access rates **" << endl;
-        cout << "- Reads: " <<  double(total_reads + total_readsX_fetch) / double(total_cycles) << endl;
-        cout << "- Writes: " <<  double(total_writes + total_readsX_write) / double(total_cycles) << endl;
-        cout << "Total rate: " << double(total_reads + total_readsX_fetch + total_writes + total_readsX_write) / double(total_cycles) << endl;
+        cout << "- Reads: " <<  double(bus.total_reads + bus.total_readsX_fetch) / double(total_cycles) << endl;
+        cout << "- Writes: " <<  double(bus.total_writes + bus.total_readsX_write) / double(total_cycles) << endl;
+        cout << "Total rate: " << double(bus.total_reads + bus.total_readsX_fetch + bus.total_writes + bus.total_readsX_write) / double(total_cycles) << endl;
 
-        cout << "\nTotal main memory responses: " << total_reads + total_readsX_fetch << endl;
+        cout << "\nTotal main memory responses: " << bus.total_reads + bus.total_readsX_fetch << endl;
 
         cout << "\n\n** Total time **" << endl;
         cout << "Total simulation time (sys) " << total_sys_time << endl;
