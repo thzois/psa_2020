@@ -1,7 +1,7 @@
 # Parallel System Architectures - UvA
 
 ### Prerequisites
-- SystemC (tested under v2.3.3)
+- [SystemC](https://www.accellera.org/downloads/standards/systemc) (tested under v2.3.3)
 
 ### Run the code
 1. make
