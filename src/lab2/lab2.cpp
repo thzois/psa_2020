@@ -910,7 +910,7 @@ int sc_main(int argc, char* argv[])
         cout << "Total waits for BUS locks: " << total_waits_bus << " cycles" << endl;
         cout << "Total waits for CONFLICTING requests (same address): " << total_waits_conflicts << " cycles" << endl;
         cout << "Total waits: " << total_waits << " cycles" << endl;
-        cout << "Averate time for BUS acquisition: " << double(total_waits) / double(total_writes + total_reads + total_readsX_fetch + total_readsX_write) << " cycles" << endl;
+        cout << "Average time for BUS acquisition: " << double(total_waits) / double(total_writes + total_reads + total_readsX_fetch + total_readsX_write) << " cycles" << endl;
 
 
         cout << "\n\n** Main memory access rates **" << endl;
