@@ -1,0 +1,42 @@
+
+        SystemC 2.3.3-Accellera --- Jan 11 2020 02:01:45
+        Copyright (c) 1996-2018 by all Contributors,
+        ALL RIGHTS RESERVED
+CPU	Reads	RHit	RMiss	Writes	WHit	WMiss	Hitrate
+0	4113	22	4091	4030	35	3995	0.699988
+1	18318	0	18318	18440	0	18440	0.000000
+2	25834	21	25813	25470	30	25440	0.099407
+3	29549	1275	28274	28801	1180	27621	4.207369
+4	31366	2	31364	30548	1	30547	0.004845
+5	32015	11	32004	31782	26	31756	0.057996
+6	32327	1624	30703	32285	1653	30632	5.071813
+7	32536	1687	30849	32584	1771	30813	5.310197
+
+** Requests on BUS **
+- Reads: 201416
+- ReadsX_Fetch: 199244
+Total (Reads): 400660
+- Writes: 4696
+- ReadsX_Write: 199244
+Total (Writes): 203940
+Total (All): 604600
+
+** BUS contention (for caches-only) **
+Total waits for MEM responses: 12320338 cycles
+Total waits for BUS locks: 52622873 cycles
+Total waits for CONFLICTING requests (same tag): 175103 cycles
+Total waits: 65118314 cycles
+Average time for BUS acquisition: 107.705 cycles
+
+
+** Main memory access rates **
+- Reads: 0.0174091
+- Writes: 0.0088614
+Total rate: 0.0262705
+
+Total main memory responses: 400660
+
+
+** Total time **
+Total simulation time (sys) 23014417 ns
+Total simulation time (real) 31.876 sec
