@@ -879,7 +879,7 @@ int sc_main(int argc, char* argv[])
         cout << "Total (All): " << bus.total_reads + bus.total_readsX_fetch + bus.total_writes + bus.total_readsX_write << endl;
 
         cout << "\n** BUS contention (for caches-only) **" << endl;
-        cout << "Total waits for MEM responses: " << bus.total_waits_ram << " cycles" << endl;
+        cout << "Total waits due to priority for MEM responses: " << bus.total_waits_ram << " cycles" << endl;
         cout << "Total waits for BUS locks: " << bus.total_waits_bus << " cycles" << endl;
         cout << "Total waits for CONFLICTING requests (same tag): " << bus.total_waits_conflicts << " cycles" << endl;
         cout << "Total waits: " << total_waits << " cycles" << endl;
