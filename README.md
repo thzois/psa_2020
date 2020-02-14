@@ -15,3 +15,8 @@ Note: In the tracefiles the number near "p" is related to the number of processo
 - Lab 2: Implement a multiprocessor coherent cache system
 
 See: lab_assignments.pdf
+
+### Take-Home Assignment
+It is a theoretical assignment related with:
+- False dependencies and register renaming
+- Scheduling in superscalar CPUs using Tomasulo's algorithm
